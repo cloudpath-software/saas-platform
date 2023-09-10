@@ -1,0 +1,9 @@
+apiVersion: 1
+
+datasources:
+  - name: Jaeger
+    uid: cloudpath-metrics
+    type: jaeger
+    url: http://tracing:16686/jaeger/ui
+    editable: true
+    isDefault: false
