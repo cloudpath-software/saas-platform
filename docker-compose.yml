@@ -9,7 +9,7 @@ networks:
     name: cloudpath-net
     driver: bridge
 services:
-   # Cache used by the api gateway to retreive allowed cors domains, hosting service to improve site load time & other.
+  #  Cache used by the api gateway to retreive allowed cors domains, hosting service to improve site load time & other.
   redis:
     image: redis:7.0-alpine
     restart: unless-stopped
@@ -24,9 +24,8 @@ services:
     volumes:
       - cache-data:/data
     logging: *logging
-
   #  Discovery service used to client-side load balance requests & make requests to healthy instances.
-  discovery-service:
+  discovery:
     image: consul:1.15.4
     container_name: discovery
     restart: unless-stopped
@@ -36,7 +35,7 @@ services:
 
   # Rabbitmq used by services to manage async events (org creation, sending an email, etc.)
   rabbitmq:
-    image: rabbitmq:3.12.3-management-alpine
+    image: rabbitmq:3.12.8-management-alpine
     container_name: messaging
     restart: unless-stopped
     volumes:
@@ -78,29 +77,55 @@ services:
 
   # OpenTelemetry Collector
   otelcol:
-    image: otel/opentelemetry-collector-contrib:0.84.0
-    container_name: tracing-collector
+    image: otel/opentelemetry-collector-contrib:0.89.0
+    container_name: otel-collector
     deploy:
       resources:
         limits:
           memory: 125M
     restart: unless-stopped
-    command: [ "--config=/etc/otelcol-config.yml", "--config=/etc/otelcol-observability.yml" ]
+    command: [ "--config=/etc/otelcol-config.yml" ]
     volumes:
       - ./config/otel/otelcol-config.yml:/etc/otelcol-config.yml
       - ./config/otel/otelcol-observability.yml:/etc/otelcol-observability.yml
     ports:
-      - "4317"          # OTLP over gRPC receiver
+      - "4317:4317"     # OTLP over gRPC receiver
       - "4318:4318"     # OTLP over HTTP receiver
       - "9464"          # Prometheus exporter
       - "8888"          # metrics endpoint
-    depends_on:
-      - tracing
+      - "55679:55679"   # zpages endpoint
     logging: *logging
     
   # Grafana
+  loki:
+    container_name: loki
+    image: grafana/loki:2.9.2
+    volumes:
+      - ./config/grafana/loki/loki-config.yml:/etc/loki/config.yml
+    # ports:
+    #   - "3100:3100"
+    command: -config.file=/etc/loki/config.yml
+
+  tempo:
+    image: grafana/tempo:2.3.0
+    container_name: tempo
+    command: [ "-config.file=/etc/config.yml" ]
+    volumes:
+      - ./config/grafana/tempo/config.yml:/etc/config.yml
+    ports:
+      - "3200:3200"   # tempo
+      - "4317:4317"  # otlp grpc
+
+  promtail:
+    container_name: promtail
+    image: grafana/promtail:2.9.2
+    volumes:
+      - ./config/grafana/promtail/promtail-config.yml:/etc/promtail/config.yml
+      - /var/log:/var/log
+    command: -config.file=/etc/promtail/config.yml
+
   grafana:
-    image: grafana/grafana:10.1.1
+    image: grafana/grafana:10.2.1
     container_name: grafana
     deploy:
       resources:
@@ -140,8 +165,8 @@ services:
   # Public services
   # ********************
 
-  public-api-gateway:
-    image: cr.cloudpath.app/public-api-gateway:latest
+  api-gateway:
+    image: ${IMAGE_NAME}/api-gateway:latest
     container_name: internal-spa-bff
     restart: unless-stopped
     depends_on:
@@ -151,14 +176,25 @@ services:
         condition: service_started
     ports:
       - 443:443
+
+  public-spa-bff:
+    image: ${IMAGE_NAME}/publc-spa-bff:latest
+    container_name: public-spa-bff
+    restart: unless-stopped
+    depends_on:
+      discovery:
+        condition: service_started
+      redis:
+        condition: service_started
+
   public-oauth2:
-    image: cr.cloudpath.app/publc-oauth2-service:latest
+    image: ${IMAGE_NAME}/publc-oauth2-service:latest
     container_name: public-oauth2
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
-      discovery-service:
+      discovery:
         condition: service_started
       redis:
         condition: service_started
@@ -168,7 +204,7 @@ services:
   # ********************
 
   internal-api-gateway:
-    image: cr.cloudpath.app/internal-api-gateway:latest
+    image: ${IMAGE_NAME}/internal-api-gateway:latest
     container_name: internal-api-gateway
     restart: unless-stopped
     depends_on:
@@ -176,7 +212,7 @@ services:
     ports:
       - 80:80
   internal-spa-bff:
-    image: cr.cloudpath.app/internal-spa-bff-serivce:latest
+    image: ${IMAGE_NAME}/internal-spa-bff-serivce:latest
     container_name: internal-spa-bff
     restart: unless-stopped
     depends_on:
@@ -187,20 +223,20 @@ services:
   #********************
 
   authorization:
-    image: cr.cloudpath.app/authorization-service:latest
+    image: ${IMAGE_NAME}/authorization-service:latest
     restart: unless-stopped
     depends_on:
       public-oauth2:
         condition: service_started
   cdn:
-    image: cr.cloudpath.app/cdn-service:latest
+    image: ${IMAGE_NAME}/cdn-service:latest
     container_name: content-delivery
     restart: unless-stopped
     depends_on:
       core:
         condition: service_started
   core:
-    image: cr.cloudpath.app/core-service:latest
+    image: ${IMAGE_NAME}/core-service:latest
     container_name: core
     restart: unless-stopped
     depends_on:
@@ -211,14 +247,14 @@ services:
       cdn:
         condition: service_started
   admin:
-    image: cr.cloudpath.app/admin-service:latest
+    image: ${IMAGE_NAME}/admin-service:latest
     container_name: admin
     restart: unless-stopped
     depends_on:
       core:
         condition: service_started
   internal:
-    image: cr.cloudpath.app/internal-service:latest
+    image: ${IMAGE_NAME}/internal-service:latest
     container_name: internal
     restart: unless-stopped
     depends_on:
@@ -226,15 +262,15 @@ services:
         condition: service_started
       hosting:
         condition: service_started
-   start:
-    image: cr.cloudpath.app/start-service:latest
+  start:
+    image: ${IMAGE_NAME}/start-service:latest
     container_name: start
     restart: unless-stopped
     depends_on:
       internal:
         condition: service_started
   hosting:
-    image: cr.cloudpath.app/hosting-service:latest
+    image: ${IMAGE_NAME}/hosting-service:latest
     container_name: hosting
     restart: unless-stopped
     depends_on:
@@ -243,7 +279,7 @@ services:
       telemetry:
         condition: service_started
   telemetry:
-    image: cr.cloudpath.app/telemetry-service:latest
+    image: ${IMAGE_NAME}/telemetry-service:latest
     container_name: telemetry
     restart: unless-stopped
     depends_on:
